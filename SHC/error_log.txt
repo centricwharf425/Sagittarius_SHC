@@ -1,0 +1,16 @@
+/home/azahri/projects/SHC/SHC.ino:5:10: fatal error: Adafruit_INA260.h: No such file or directory
+    5 | #include <Adafruit_INA260.h>
+      |          ^~~~~~~~~~~~~~~~~~~
+compilation terminated.
+
+[92mUsed library[0m            [92mVersion[0m [90mPath[0m
+[93mWire[0m                    1.0     [90m/home/azahri/.arduino15/packages/teensy/hardware/avr/1.62.0/libraries/Wire[0m
+[93mAdafruit Unified Sensor[0m 1.1.15  [90m/home/azahri/Arduino/libraries/Adafruit_Unified_Sensor[0m
+[93mAdafruit BNO055[0m         1.6.4   [90m/home/azahri/Arduino/libraries/Adafruit_BNO055[0m
+[93mAdafruit BusIO[0m          1.17.4  [90m/home/azahri/Arduino/libraries/Adafruit_BusIO[0m
+[93mAdafruit BME280 Library[0m 2.3.0   [90m/home/azahri/Arduino/libraries/Adafruit_BME280_Library[0m
+[93mSPI[0m                     1.0     [90m/home/azahri/.arduino15/packages/teensy/hardware/avr/1.62.0/libraries/SPI[0m
+
+[92mUsed platform[0m [92mVersion[0m [90mPath[0m
+[93mteensy:avr[0m    1.62.0  [90m/home/azahri/.arduino15/packages/teensy/hardware/avr/1.62.0[0m
+Error during build: exit status 1
