@@ -12,7 +12,7 @@ Adafruit_BNO055 bno = Adafruit_BNO055(55, 0x28);
 Adafruit_BME280 bme;
 Adafruit_INA260 ina260 = Adafruit_INA260();
 SFE_UBLOX_GNSS myGNSS;
-OpenLog myLog;
+
 
 time_t getTeensy3Time() {
   return Teensy3Clock.get();
@@ -24,6 +24,7 @@ volatile unsigned long counts = 0;  // Volatile required for ISR modification
 unsigned long previousMillis = 0;
 unsigned long cpmSnapshot = 0;  // Holds the calculated CPM for logging/printing
 #define LOG_PERIOD 60000
+#define myLog Serial4
 
 void impulse() {
   counts++;
@@ -52,11 +53,6 @@ void sensor_validation() {
     while (1);
   }
 
-  if (myLog.begin(0x2A) == false) {
-    Serial.println("Qwiic OpenLog failed to respond. Check your wiring!");
-    while (1);
-  }
-
   // Setup Geiger Interrupt
   pinMode(geigerPin, INPUT);
   attachInterrupt(digitalPinToInterrupt(geigerPin), impulse, FALLING);
@@ -66,6 +62,7 @@ void sensor_validation() {
 void setup() {
   Serial.println("Code has begun");
   Serial.begin(115200);
+  myLog.begin(9600);  // UART Serial to OpenLog (Factory default speed)
 
   Wire.begin();
   Wire.setClock(400000);
