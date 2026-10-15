@@ -17,13 +17,22 @@ time_t getTeensy3Time() {
 }
 
 // Geiger Counter Configuration
-const int geigerPin = 4;            // Synced hardware interrupt pin
-volatile unsigned long counts = 0;  // Volatile required for ISR modification
+const int geigerPin = 4;             // Synced hardware interrupt pin
+volatile unsigned long counts = 0;   // Volatile required for ISR modification
 unsigned long previousMillis = 0;
-unsigned long cpmSnapshot = 0;  // Holds the calculated CPM for logging/printing
-unsigned long lastHeartbeat = 0; // Track background processing health
+unsigned long cpmSnapshot = 0;       // Holds the calculated CPM for logging/printing
+unsigned long lastHeartbeat = 0;     // Track background processing health
 #define LOG_PERIOD 60000
 #define myLog Serial4
+
+// State flags
+bool rtcSetFromGPS = false;  // True once the RTC + TimeLib clock were set from a valid GPS fix
+bool headerWritten = false;  // True once the CSV header has been sent to the OpenLog
+
+const char CSV_HEADER[] =
+  "Date,Time,Timestamp_ms,Temp_C,Humidity_percent,Pressure_hPa,"
+  "X_Orient,Y_Orient,Z_Orient,Current_mA,Bus_Voltage_V,Power_mW,"
+  "Latitude,Longitude,Altitude_m,CPM";
 
 void impulse() {
   counts++;
@@ -60,9 +69,9 @@ void sensor_validation() {
 
 void setup() {
   Serial.begin(115200);
-  while (!Serial && millis() < 4000); // Wait up to 4 seconds for screen connection
+  while (!Serial && millis() < 4000);  // Wait up to 4 seconds for screen connection
   Serial.println("Code has begun initialization...");
-  
+
   myLog.begin(9600);  // UART Serial to OpenLog (Factory default speed)
 
   Wire.begin();
@@ -75,8 +84,10 @@ void setup() {
   myGNSS.setI2COutput(COM_TYPE_UBX);
   myGNSS.setNavigationFrequency(10);
 
-  // Print the true CSV data header down to the OpenLog SD Card
-  myLog.println("Date,Time,Timestamp_ms,Temp_C,Humidity_percent,Pressure_hPa,X_Orient,Y_Orient,Z_Orient,Current_mA,Bus_Voltage_V,Power_mW,Latitude,Longitude,Altitude_m,CPM");
+  // NOTE: The CSV header is NOT written here anymore. The OpenLog is still
+  // booting and mounting the SD card at this point, so it would drop the text.
+  // It is written from loop() right before the first data row instead.
+
   Serial.println("Setup completed successfully. Waiting for GPS PVT packets...");
 }
 
@@ -84,11 +95,14 @@ void loop() {
   unsigned long currentMillis = millis();
 
   // Background Heartbeat Monitor
-  // If the terminal stays blank but dots continue to print, your Teensy is fully alive 
-  // and simply waiting for the u-blox GPS module to send a valid navigation data packet.
+  // Prints GPS status every 2 s so you can see whether the module has a fix
+  // and whether the clock has been set yet.
   if (currentMillis - lastHeartbeat >= 2000) {
     lastHeartbeat = currentMillis;
-    Serial.print("."); 
+    Serial.printf("[fix:%u sats:%u clock:%s] ",
+                  myGNSS.getFixType(),
+                  myGNSS.getSIV(),
+                  rtcSetFromGPS ? "GPS" : "NOSYNC");
   }
 
   // Get a new sensor event
@@ -121,29 +135,49 @@ void loop() {
 
   // Non-blocking query
   if (myGNSS.getPVT() == true) {
-    // Check if GPS time is valid. If yes, update the Teensy Hardware RTC.
-    if (myGNSS.getGnssFixOk() && myGNSS.getTimeValid() && myGNSS.getDateValid()) {
+
+    // Set the clock ONCE from the first valid GPS fix.
+    // Teensy3Clock.set() updates the hardware RTC; setTime() updates TimeLib's
+    // own clock immediately so year()/month()/day() are correct right away.
+    // (GPS time is UTC.)
+    if (!rtcSetFromGPS && myGNSS.getGnssFixOk() && myGNSS.getTimeValid() && myGNSS.getDateValid()) {
       tmElements_t gpsTime;
-      gpsTime.Year = myGNSS.getYear() - 1970;  // TimeLib expects years since 1970
-      gpsTime.Month = myGNSS.getMonth();
-      gpsTime.Day = myGNSS.getDay();
-      gpsTime.Hour = myGNSS.getHour();
+      gpsTime.Year   = myGNSS.getYear() - 1970;  // TimeLib expects years since 1970
+      gpsTime.Month  = myGNSS.getMonth();
+      gpsTime.Day    = myGNSS.getDay();
+      gpsTime.Hour   = myGNSS.getHour();
       gpsTime.Minute = myGNSS.getMinute();
       gpsTime.Second = myGNSS.getSecond();
 
-      Teensy3Clock.set(makeTime(gpsTime));
+      time_t t = makeTime(gpsTime);
+      Teensy3Clock.set(t);
+      setTime(t);
+      rtcSetFromGPS = true;
+      Serial.println("\n>>> Clock set from GPS (UTC).");
     }
 
-    // Convert GPS integers to floats with correct scaling
-    float latitude = myGNSS.getLatitude() / 10000000.0;    // Scaled 10^7 to Degrees
-    float longitude = myGNSS.getLongitude() / 10000000.0;  // Scaled 10^7 to Degrees
-    float altitude = myGNSS.getAltitudeMSL() / 1000.0;     // Millimeters to Meters
+    // GPS values as double: a 32-bit float only holds ~7 significant digits
+    double latitude  = myGNSS.getLatitude()  / 10000000.0;  // Scaled 10^7 to Degrees
+    double longitude = myGNSS.getLongitude() / 10000000.0;  // Scaled 10^7 to Degrees
+    float altitude   = myGNSS.getAltitudeMSL() / 1000.0;    // Millimeters to Meters
 
-    // FIXED: Corrected character allocations from scalar values back to explicit arrays
     char dateStr[12];
     char timeStr[9];
-    snprintf(dateStr, sizeof(dateStr), "%04d-%02d-%02d", year(), month(), day());
-    snprintf(timeStr, sizeof(timeStr), "%02d:%02d:%02d", hour(), minute(), second());
+    if (rtcSetFromGPS) {
+      snprintf(dateStr, sizeof(dateStr), "%04d-%02d-%02d", year(), month(), day());
+      snprintf(timeStr, sizeof(timeStr), "%02d:%02d:%02d", hour(), minute(), second());
+    } else {
+      // Clock hasn't been set from GPS yet, so don't log a misleading date.
+      // Timestamp_ms still gives you row ordering.
+      snprintf(dateStr, sizeof(dateStr), "NOSYNC");
+      snprintf(timeStr, sizeof(timeStr), "NOSYNC");
+    }
+
+    // Write the CSV header once, just before the first data row
+    if (!headerWritten) {
+      myLog.println(CSV_HEADER);
+      headerWritten = true;
+    }
 
     // Log clean comma-separated values to OpenLog
     myLog.print(dateStr); myLog.print(",");
@@ -158,16 +192,16 @@ void loop() {
     myLog.print(current); myLog.print(",");
     myLog.print(bus_voltage); myLog.print(",");
     myLog.print(power); myLog.print(",");
-    myLog.print(latitude); myLog.print(",");
-    myLog.print(longitude); myLog.print(",");
+    myLog.print(latitude, 7); myLog.print(",");    // 7 decimals is ~1 cm resolution
+    myLog.print(longitude, 7); myLog.print(",");
     myLog.print(altitude); myLog.print(",");
-    myLog.println(cpmSnapshot); // Line ending creates a clean carriage return row
+    myLog.println(cpmSnapshot);  // Line ending creates a clean carriage return row
 
     // Print Telemetry Visual Table to standard serial monitor
     Serial.println("\n| Date       | Time     | Runtime_ms | Temp (*C) | Humidity (%) | Pressure (hPa) | X Orient | Y Orient | Z Orient | Current | Bus Voltage | Power | latitude | longitude | altitude | CPM   |");
     Serial.println("|------------|----------|------------|-----------|--------------|----------------|----------|----------|----------|---------|-------------|-------|----------|-----------|----------|-------|");
 
-    // Unified 16 layout specifiers matching exactly 16 passed variable bounds
+    // 16 layout specifiers matching exactly 16 passed variables
     Serial.printf("| %s | %s | %-10lu | %-9.2f | %-12.1f | %-14.2f | %-8.2f | %-8.2f | %-8.2f | %-7.2f | %-11.2f | %-5.2f | %-8.5f | %-9.5f | %-8.2f | %-5lu |\n",
                   dateStr, timeStr, millis(), temp, hum, pres, x_orient, y_orient, z_orient, current, bus_voltage, power, latitude, longitude, altitude, cpmSnapshot);
 
