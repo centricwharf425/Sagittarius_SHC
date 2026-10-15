@@ -4,7 +4,6 @@
 #include <Adafruit_BME280.h>
 #include <Adafruit_INA260.h>
 #include <SparkFun_u-blox_GNSS_Arduino_Library.h>
-#include <SparkFun_Qwiic_OpenLog_Arduino_Library.h>
 #include <TimeLib.h>  // Include Time library for Teensy hardware RTC
 
 // Initialize with the default I2C address (0x28)
@@ -12,7 +11,6 @@ Adafruit_BNO055 bno = Adafruit_BNO055(55, 0x28);
 Adafruit_BME280 bme;
 Adafruit_INA260 ina260 = Adafruit_INA260();
 SFE_UBLOX_GNSS myGNSS;
-
 
 time_t getTeensy3Time() {
   return Teensy3Clock.get();
@@ -23,6 +21,7 @@ const int geigerPin = 4;            // Synced hardware interrupt pin
 volatile unsigned long counts = 0;  // Volatile required for ISR modification
 unsigned long previousMillis = 0;
 unsigned long cpmSnapshot = 0;  // Holds the calculated CPM for logging/printing
+unsigned long lastHeartbeat = 0; // Track background processing health
 #define LOG_PERIOD 60000
 #define myLog Serial4
 
@@ -60,8 +59,10 @@ void sensor_validation() {
 }
 
 void setup() {
-  Serial.println("Code has begun");
   Serial.begin(115200);
+  while (!Serial && millis() < 4000); // Wait up to 4 seconds for screen connection
+  Serial.println("Code has begun initialization...");
+  
   myLog.begin(9600);  // UART Serial to OpenLog (Factory default speed)
 
   Wire.begin();
@@ -74,12 +75,21 @@ void setup() {
   myGNSS.setI2COutput(COM_TYPE_UBX);
   myGNSS.setNavigationFrequency(10);
 
-  // Updated OpenLog header to include CPM column
-  myLog.println("Date,Time,Timestamp_ms,Temp (*C),Humidity (%),Pressure (hPa),X Orient,Y Orient,Z Orient,Current,Bus Voltage,Power,Latitude,Longitude,Altitude,CPM");
+  // Print the true CSV data header down to the OpenLog SD Card
+  myLog.println("Date,Time,Timestamp_ms,Temp_C,Humidity_percent,Pressure_hPa,X_Orient,Y_Orient,Z_Orient,Current_mA,Bus_Voltage_V,Power_mW,Latitude,Longitude,Altitude_m,CPM");
+  Serial.println("Setup completed successfully. Waiting for GPS PVT packets...");
 }
 
 void loop() {
   unsigned long currentMillis = millis();
+
+  // Background Heartbeat Monitor
+  // If the terminal stays blank but dots continue to print, your Teensy is fully alive 
+  // and simply waiting for the u-blox GPS module to send a valid navigation data packet.
+  if (currentMillis - lastHeartbeat >= 2000) {
+    lastHeartbeat = currentMillis;
+    Serial.print("."); 
+  }
 
   // Get a new sensor event
   sensors_event_t event;
@@ -109,9 +119,9 @@ void loop() {
     Serial.println(cpmSnapshot);
   }
 
-  // Non-blocking query with custom 0ms timeout parameter to eliminate telemetry drag
+  // Non-blocking query
   if (myGNSS.getPVT() == true) {
-    // 1. Check if GPS time is valid. If yes, update the Teensy Hardware RTC.
+    // Check if GPS time is valid. If yes, update the Teensy Hardware RTC.
     if (myGNSS.getGnssFixOk() && myGNSS.getTimeValid() && myGNSS.getDateValid()) {
       tmElements_t gpsTime;
       gpsTime.Year = myGNSS.getYear() - 1970;  // TimeLib expects years since 1970
@@ -129,54 +139,39 @@ void loop() {
     float longitude = myGNSS.getLongitude() / 10000000.0;  // Scaled 10^7 to Degrees
     float altitude = myGNSS.getAltitudeMSL() / 1000.0;     // Millimeters to Meters
 
-    // Create string buffers for formatted date & time strings
+    // FIXED: Corrected character allocations from scalar values back to explicit arrays
     char dateStr[12];
     char timeStr[9];
     snprintf(dateStr, sizeof(dateStr), "%04d-%02d-%02d", year(), month(), day());
     snprintf(timeStr, sizeof(timeStr), "%02d:%02d:%02d", hour(), minute(), second());
 
-    // Log tracking elements to OpenLog
-    myLog.print(dateStr);
-    myLog.print(",");
-    myLog.print(timeStr);
-    myLog.print(",");
-    myLog.print(millis());
-    myLog.print(",");
-    myLog.print(temp);
-    myLog.print(",");
-    myLog.print(hum);
-    myLog.print(",");
-    myLog.print(pres);
-    myLog.print(",");
-    myLog.print(x_orient);
-    myLog.print(",");
-    myLog.print(y_orient);
-    myLog.print(",");
-    myLog.print(z_orient);
-    myLog.print(",");
-    myLog.print(current);
-    myLog.print(",");
-    myLog.print(bus_voltage);
-    myLog.print(",");
-    myLog.print(power);
-    myLog.print(",");
-    myLog.print(latitude);
-    myLog.print(",");
-    myLog.print(longitude);
-    myLog.print(",");
-    myLog.print(altitude);
-    myLog.print(",");
-    myLog.println(cpmSnapshot);  // Appended current CPM snapshot to OpenLog CSV row
+    // Log clean comma-separated values to OpenLog
+    myLog.print(dateStr); myLog.print(",");
+    myLog.print(timeStr); myLog.print(",");
+    myLog.print(millis()); myLog.print(",");
+    myLog.print(temp); myLog.print(",");
+    myLog.print(hum); myLog.print(",");
+    myLog.print(pres); myLog.print(",");
+    myLog.print(x_orient); myLog.print(",");
+    myLog.print(y_orient); myLog.print(",");
+    myLog.print(z_orient); myLog.print(",");
+    myLog.print(current); myLog.print(",");
+    myLog.print(bus_voltage); myLog.print(",");
+    myLog.print(power); myLog.print(",");
+    myLog.print(latitude); myLog.print(",");
+    myLog.print(longitude); myLog.print(",");
+    myLog.print(altitude); myLog.print(",");
+    myLog.println(cpmSnapshot); // Line ending creates a clean carriage return row
 
-    // Print Telemetry Table
-    Serial.println("| Date       | Time     | Temp (*C) | Humidity (%) | Pressure (hPa) | X Orient | Y Orient | Z Orient | Current | Bus Voltage | Power | latitude | longitude | altitude | CPM   |");
-    Serial.println("|------------|----------|-----------|--------------|----------------|----------|----------|----------|---------|-------------|-------|----------|-----------|----------|-------|");
+    // Print Telemetry Visual Table to standard serial monitor
+    Serial.println("\n| Date       | Time     | Runtime_ms | Temp (*C) | Humidity (%) | Pressure (hPa) | X Orient | Y Orient | Z Orient | Current | Bus Voltage | Power | latitude | longitude | altitude | CPM   |");
+    Serial.println("|------------|----------|------------|-----------|--------------|----------------|----------|----------|----------|---------|-------------|-------|----------|-----------|----------|-------|");
 
-    // Corrected format token from %-3.2f to %-5lu for long unsigned integer alignment
-    Serial.printf("| %s | %s | %-9.2f | %-12.1f | %-14.2f | %-8.2f | %-8.2f | %-8.2f | %-7.2f | %-11.2f | %-5.2f | %-8.5f | %-9.5f | %-8.2f | %-5lu |\n",
-                  dateStr, timeStr, temp, hum, pres, x_orient, y_orient, z_orient, current, bus_voltage, power, latitude, longitude, altitude, cpmSnapshot);
+    // Unified 16 layout specifiers matching exactly 16 passed variable bounds
+    Serial.printf("| %s | %s | %-10lu | %-9.2f | %-12.1f | %-14.2f | %-8.2f | %-8.2f | %-8.2f | %-7.2f | %-11.2f | %-5.2f | %-8.5f | %-9.5f | %-8.2f | %-5lu |\n",
+                  dateStr, timeStr, millis(), temp, hum, pres, x_orient, y_orient, z_orient, current, bus_voltage, power, latitude, longitude, altitude, cpmSnapshot);
 
-    Serial.println("|------------|----------|-----------|--------------|----------------|----------|----------|----------|---------|-------------|-------|----------|-----------|----------|-------|");
+    Serial.println("|------------|----------|------------|-----------|--------------|----------------|----------|----------|----------|---------|-------------|-------|----------|-----------|----------|-------|");
   }
   delay(25);
 }
